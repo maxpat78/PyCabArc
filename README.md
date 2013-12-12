@@ -18,36 +18,38 @@ FOLDER CONTENTS
 - gpl.txt				GPL v2 license file: it applies to this package
 
 
-MS-ZIP COMPRESSION IMPLEMENTATION
-=================================
+MS-ZIP COMPRESSION EMULATION
+============================
 
 A CAB folder's uncompressed stream is processed in 32 KiB blocks (the last
 one can be smaller).
 
 Each CAB folder gets a new ZSTREAM, with zlib set to emit raw Deflate blocks.
 
-Each block is then compressed with a Z_SYNC_FLUSH deflate call, the last one
-with a Z_FINISH call to mark the end of ZSTREAM.
+Each block is then compressed with a Z_SYNC_FLUSH deflate call plus a Z_FINISH
+call (from a cloned compressor object) to mark the end of the ZSTREAM: so the
+last Deflate sub-block is marked as final but the compression history is saved,
+like MS spec formally requires (Cabarc 5.2 and the Windows shell, however, can 
+extract a stream built with many Z_SYNC_FLUSH calls and a single Z_FINISH at
+folder's end).
 
-Since a raw compressed block MUST never exceed 32768+12 bytes according to MS spec,
-when such a block is found, we emit it uncompressed, requiring exactly 32775
-bytes ('CK' + block type 01 + block length 0x8000 + 1 complement 0x7FFF + raw data).
+Since a raw compressed block MUST never exceed 32768+12 bytes, when such a block
+is found, we emit it uncompressed, requiring exactly 32775 bytes ('CK' + block
+type 01 + block length 0x8000 + 1 complement 0x7FFF + raw data).
 
-Actually, 7-Zip (http://www.7-zip.org) can expand a CAB even if it contains
-blocks >32780 bytes and the last one isn't marked as final: but MS CABARC 5.2 fails!
+Moreover, it seems that assigning less memory to the zlib deflater (memlevel=6
+instead of 8, the default), provides better compression ratio at a reasonable
+expense of speed.
 
-Moreover, it seems that assigning less memory to the zlib deflater (memlevel=6 instead
-of 8, the default), provides better compression ratio at a reasonable expense of speed.
-
-This method gives a compression ratio slightly superior to CABARC.
-
-The generated cabinet will then be successfully extracted by CABARC and other tools
-supporting cabinet files (extract, WinZip, WinRAR, cabextract, 7-zip, ecc.).
+The generated cabinet will then be successfully extracted by CABARC and other
+tools supporting cabinet files (Windows Shell, extract, WinZip, WinRAR,
+cabextract, 7-zip, etc.).
 
 NOTE THAT SOME OF THESE TOOLS *REQUIRE* CFDATA CHECKSUMS TO WORK PROPERLY!
 
 Current version supports having more folders, even with different compression type.
 Quantum compression is not supported.
+
 LZX is implemented with the MSCompression library, that actually doesn't work properly.
 
 
@@ -102,24 +104,7 @@ HISTORY:
                      converted to dumb add mode (permit duplicated items)
                      reverted zlib to a faster approach in time/ratio/mem balancing
 - 01.11.2012  v.0.31   implemented checksum algorithm in pure Python (w/ ctypes)
-- 19.11.2012           fixed declaration of Checksum in the script body
-
-
-TO DO & WISHES:
-==============
-
-- note: using Python ctypes and logging breaks compatibility with older Pythons
-- integrate FileSetStream in I/O?
-- add references to container in each object (to simplify things)?
-- bind compressor object to its folder (so each folder gets its own compression
-  method and/or level? is this permitted?
-- add a simple extractor?
-- split, merge and update cabinets (all require folder recompression ;-)
-- better error checking
-- limit folders by size?
-- port checksum code in pure Python?
-- update cmd line manager with optparse/argparse?
-- find infos about 3DES encrypted CABs? Windows Phone?
-
-WARNING: according to VS2010 documentation, a splitted CAB couldn't contain more than
-15 files across 2 segments... Did such limit exist with those old Win95 MSDMF CABs???
+- 08.01.2013  v.0.32   fixed import of Checksum function
+                     implemented an LZX2 class with Jeff's CabLzxDll
+- 11.12.2013  v.0.33   works again with -m NONE
+                     always marks last CFDATA Deflated sub-block as final

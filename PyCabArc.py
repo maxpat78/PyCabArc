@@ -7,35 +7,37 @@ This Python 2.7 module (and stand-alone mini app) shows how to use zlib module
 to emulate "MS"-ZIP compression in a cabinet. It can span cabinet sets, too!
 
 
-MS-ZIP COMPRESSION IMPLEMENTATION
-=================================
+MS-ZIP COMPRESSION EMULATION
+============================
 A CAB folder's uncompressed stream is processed in 32 KiB blocks (the last
 one can be smaller).
 
 Each CAB folder gets a new ZSTREAM, with zlib set to emit raw Deflate blocks.
 
-Each block is then compressed with a Z_SYNC_FLUSH deflate call, the last one
-with a Z_FINISH call to mark the end of ZSTREAM.
+Each block is then compressed with a Z_SYNC_FLUSH deflate call plus a Z_FINISH
+call (from a cloned compressor object) to mark the end of the ZSTREAM: so the
+last Deflate sub-block is marked as final but the compression history is saved,
+like MS spec formally requires (Cabarc 5.2 and the Windows shell, however, can 
+extract a stream built with many Z_SYNC_FLUSH calls and a single Z_FINISH at
+folder's end).
 
-Since a raw compressed block MUST never exceed 32768+12 bytes according to MS spec,
-when such a block is found, we emit it uncompressed, requiring exactly 32775
-bytes ('CK' + block type 01 + block length 0x8000 + 1 complement 0x7FFF + raw data).
+Since a raw compressed block MUST never exceed 32768+12 bytes, when such a block
+is found, we emit it uncompressed, requiring exactly 32775 bytes ('CK' + block
+type 01 + block length 0x8000 + 1 complement 0x7FFF + raw data).
 
-Actually, 7-Zip (http://www.7-zip.org) can expand a CAB even if it contains
-blocks >32780 bytes and the last one isn't marked as final: but MS CABARC 5.2 fails!
+Moreover, it seems that assigning less memory to the zlib deflater (memlevel=6
+instead of 8, the default), provides better compression ratio at a reasonable
+expense of speed.
 
-Moreover, it seems that assigning less memory to the zlib deflater (memlevel=6 instead
-of 8, the default), provides better compression ratio at a reasonable expense of speed.
-
-This method gives a compression ratio slightly superior to CABARC.
-
-The generated cabinet will then be successfully extracted by CABARC and other tools
-supporting cabinet files (extract, WinZip, WinRAR, cabextract, 7-zip, ecc.).
+The generated cabinet will then be successfully extracted by CABARC and other
+tools supporting cabinet files (Windows Shell, extract, WinZip, WinRAR,
+cabextract, 7-zip, etc.).
 
 NOTE THAT SOME OF THESE TOOLS *REQUIRE* CFDATA CHECKSUMS TO WORK PROPERLY!
 
 Current version supports having more folders, even with different compression type.
 Quantum compression is not supported.
+
 LZX is implemented with the MSCompression library, that actually doesn't work properly.
 
 
@@ -64,7 +66,7 @@ HISTORY:
 05.11.2004  v0.1     single-pass, single-cabinet creator (w/"MS"-ZIP)
 06.11.2004  v0.1...  added command line; experiments with cabinet sets begin
 19.11.2004  v0.2     cabinet sets work well (at least, I hope!): temporary files
-		     are used to store CFDATAs for each cabinet unit
+                     are used to store CFDATAs for each cabinet unit
 20.11.2004           some retouch to last version (and recursion added)
 21.11.2004  v0.21    introduced new (more efficient) compression technique
 22.11.2004  v0.22    a few error checks, and other minor additions
@@ -73,21 +75,25 @@ HISTORY:
 23.07.2005  v0.25    removed item duplication bug
 09.09.2012  v0.26a   LZX experiments with MSCompression.dll
 11.09.2012  v0.27a   changed the -m switch for LZX (similar to MS Cabarc)
-		     moved to the logging interface for debugging
-		     added compression levels to -m mszip:1..9
-		     added elapsed seconds to statistics
+                     moved to the logging interface for debugging
+                     added compression levels to -m mszip:1..9
+                     added elapsed seconds to statistics
 12.09.2012  v0.28a   if a folder is on the cmdline, adds its files in non-recursive mode
-		     gracefully exits if there aren't files to add
-		     it won't try anymore to compress 0 length input, nor to write zero CFDATA
-		     no more division by 0 error for empty CAB in stats
+                     gracefully exits if there aren't files to add
+                     it won't try anymore to compress 0 length input, nor to write zero CFDATA
+                     no more division by 0 error for empty CAB in stats
 15.09.2012  v0.29    encodes items to UTF-8 as needed
-		     gets DOS file perms in Win32
-		     hidden -D switch to explicitly turn DEBUG log on
-		     average speed in stats
+                     gets DOS file perms in Win32
+                     hidden -D switch to explicitly turn DEBUG log on
+                     average speed in stats
 29.10.2012  v.0.30   finally fixed a severe bug with MS-ZIP blocks >32780 bytes
-		     converted to dumb add mode (permit duplicated items)
-		     reverted zlib to a faster approach in time/ratio/mem balancing
+                     converted to dumb add mode (permit duplicated items)
+                     reverted zlib to a faster approach in time/ratio/mem balancing
 01.11.2012  v.0.31   implemented checksum algorithm in pure Python (w/ ctypes)
+08.01.2013  v.0.32   fixed import of Checksum function
+                     implemented an LZX2 class with Jeff's CabLzxDll
+11.12.2013  v.0.33   works again with -m NONE
+                     always marks last CFDATA Deflated sub-block as final
 
 
 TO DO & WISHES:
@@ -101,16 +107,16 @@ TO DO & WISHES:
 - split, merge and update cabinets (all require folder recompression ;-)
 - better error checking
 - limit folders by size?
-- port checksum code in pure Python?
 - update cmd line manager with optparse/argparse?
 - find infos about 3DES encrypted CABs? Windows Phone?
 
 WARNING: according to VS2010 documentation, a splitted CAB couldn't contain more than
-15 files across 2 segments... Did such limit exist with those old Win95 MSDMF CABs???"""
+15 files across 2 segments... Did such limit exist with those old Win95 MSDMF CABs???
+"""
 
-VERSION = '0.31'
+VERSION = '0.33'
 
-COPYRIGHT = '''Copyright (C)2004-2012, by maxpat78. GNU GPL v2 applies.
+COPYRIGHT = '''Copyright (C)2004-2013, by maxpat78. GNU GPL v2 applies.
 This free software creates MS Cabinets WITH ABSOLUTELY NO WARRANTY!'''
 
 DEBUG = 0
@@ -128,7 +134,6 @@ import time
 import zlib
 from ctypes import *
 from datetime import datetime as dt
-
 
 def Checksum(s, seed=0):
 	"Implements MS CAB xoring checksum in Python (~33% slower than C version)"
@@ -151,14 +156,12 @@ def Checksum(s, seed=0):
 			i += 1
 	return abs((csum & 0xFFFFFFFF) ^ (csum >> 32))
 
-
 try:
 	# Optional Python module... what a difficult thing to implement!!!
 	import _checksum
 	CKS = _checksum.checksum
 except:
 	CKS = Checksum
-
 
 class idict(dict):
 	"Dictionary with case-insensitive (or wildcarded) keys"
@@ -182,7 +185,6 @@ class idict(dict):
 			pass
 		return dict.__setitem__(p,key,value)
 
-
 class LZX:
 # Emulates an LZX compressor by directly accessing Jeff's MSCompression.dll
 	def __init__(p, level=15):
@@ -202,6 +204,23 @@ class LZX:
 		p.state = cdll.MSCompression.lzx_cab_compress_start(p.level)
 		return ''
 
+class LZX2:
+# Emulates an LZX compressor by directly accessing Jeff's CabLzxDll.dll
+	def __init__(p, level=15):
+		p.level = level
+		cdll.CabLzxDll.fci_init()
+		
+	def compress(p, s):
+		if not s: return ''
+		SIZE_T=32768+6144
+		dst = create_string_buffer(SIZE_T)
+		size = cdll.CabLzxDll.fci_lzx_cab_compress(s, len(s), dst, SIZE_T, p.level, 1)
+		logging.debug('fci_lzx_cab_compress 2^%d returned %d from %d bytes', p.level, size, len(s))
+		return dst[:size]
+		
+	def flush(p):
+		cdll.CabLzxDll.fci_init()
+		return ''
 
 class MSZIP:
 # Emulates (more efficiently) a "MS"-ZIP compressor using ZLIB
@@ -215,7 +234,7 @@ class MSZIP:
 	def compress(p, s):
 		"Compresses a string, and eventually discards superflous bytes"
 		buf = p.obj.compress(s)
-		buf = 'CK' + buf + p.obj.flush(zlib.Z_SYNC_FLUSH)
+		buf = 'CK' + buf + p.obj.flush(zlib.Z_SYNC_FLUSH) + p.obj.copy().flush(zlib.Z_FINISH)
 		if len(buf) > 32780:
 			logging.debug("Got %d bytes compressed: emitting uncompressed block", len(buf))
 			# CK + 01 + 0x8000 + 0x7FFF + 32KiB raw data
@@ -224,9 +243,8 @@ class MSZIP:
 		
 	def flush(p):
 		"Flushes last folder, and creates a new compressor for the next one"
-		buf = p.obj.flush(zlib.Z_FINISH)
 		p.obj = zlib.compressobj(p.level, 8, -15, p.mem, 0)
-		return buf
+		return ''
 
 
 def info(s):
@@ -353,9 +371,11 @@ class IOStream:
 		if 0 < compression < 10:
 			p.CPR = MSZIP(compression) # default compressor
 			logging.debug("Set MSZIP compressor with level %d", p.CPR.level)
-		else:
+		elif (compression & 0xFF) == 3:
 			p.CPR = LZX(compression >> 8)
 			logging.debug("Set LZX compressor with level %d", p.CPR.level)
+		else:
+			logging.debug("Set NONE compressor")
 		p.fin = 0 # file actually read
 		p.fout = [tempfile.TemporaryFile()] # temp files
 		p._files = [] # files to process
